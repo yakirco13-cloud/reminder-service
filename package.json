@@ -1,0 +1,27 @@
+{
+  "name": "base44-reminder-service",
+  "version": "1.0.0",
+  "description": "Automated reminder service for Base44 booking system",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "test": "node index.js"
+  },
+  "keywords": [
+    "reminders",
+    "bookings",
+    "automation",
+    "base44"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "node-fetch": "^3.3.2",
+    "date-fns": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
