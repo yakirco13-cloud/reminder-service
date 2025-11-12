@@ -7,24 +7,79 @@
  * Features:
  * - Checks every hour for bookings that need reminders
  * - Sends reminders X hours before appointment (configurable per business)
- * - Tracks sent reminders to avoid duplicates
+ * - Tracks sent reminders in a file to avoid duplicates (survives restarts)
  * - Supports multiple businesses
  * - Hebrew language support
  */
 
 import fetch from 'node-fetch';
-import { format, parseISO, addHours, differenceInHours } from 'date-fns';
+import { format, parseISO, differenceInHours } from 'date-fns';
 import { he } from 'date-fns/locale';
+import fs from 'fs';
+import path from 'path';
+
+// Set timezone to Israel (GMT+2)
+process.env.TZ = 'Asia/Jerusalem';
 
 // Base44 API Configuration
 const BASE44_CONFIG = {
-  apiUrl: 'https://app.base44.com/api/apps/690b351ea4e5f2f9d798cdbb',
+  apiUrl: 'https://base44.app/api/apps/690b351ea4e5f2f9d798cdbb',
   apiKey: 'd6ebcd1dd1844f4c8f98c35af622bde7',
 };
 
-// In-memory tracker for sent reminders (prevents duplicates within same run)
-// In production, consider using a database or Redis
-const sentReminders = new Set();
+// File to track sent reminders
+const SENT_REMINDERS_FILE = path.join(process.cwd(), 'sent-reminders.json');
+
+/**
+ * Load sent reminders from file
+ */
+function loadSentReminders() {
+  try {
+    if (fs.existsSync(SENT_REMINDERS_FILE)) {
+      const data = fs.readFileSync(SENT_REMINDERS_FILE, 'utf8');
+      const reminders = JSON.parse(data);
+      
+      // Clean up old reminders (older than 7 days)
+      const sevenDaysAgo = Date.now() - (7 * 24 * 60 * 60 * 1000);
+      const cleaned = {};
+      for (const [key, timestamp] of Object.entries(reminders)) {
+        if (timestamp > sevenDaysAgo) {
+          cleaned[key] = timestamp;
+        }
+      }
+      
+      // Save cleaned version
+      fs.writeFileSync(SENT_REMINDERS_FILE, JSON.stringify(cleaned, null, 2));
+      
+      return new Set(Object.keys(cleaned));
+    }
+  } catch (error) {
+    console.error('Error loading sent reminders:', error);
+  }
+  return new Set();
+}
+
+/**
+ * Save a sent reminder to file
+ */
+function saveSentReminder(reminderKey) {
+  try {
+    let reminders = {};
+    if (fs.existsSync(SENT_REMINDERS_FILE)) {
+      const data = fs.readFileSync(SENT_REMINDERS_FILE, 'utf8');
+      reminders = JSON.parse(data);
+    }
+    
+    reminders[reminderKey] = Date.now();
+    fs.writeFileSync(SENT_REMINDERS_FILE, JSON.stringify(reminders, null, 2));
+  } catch (error) {
+    console.error('Error saving sent reminder:', error);
+  }
+}
+
+// Load sent reminders on startup
+const sentReminders = loadSentReminders();
+console.log(`📋 Loaded ${sentReminders.size} previously sent reminders from file`);
 
 /**
  * Fetch all businesses from Base44
@@ -55,7 +110,8 @@ async function fetchBusinesses() {
  */
 async function fetchBookings(businessId) {
   try {
-    const response = await fetch(`${BASE44_CONFIG.apiUrl}/entities/Booking?filter=business_id:${businessId}`, {
+    // Fetch ALL bookings (filter parameter doesn't work properly)
+    const response = await fetch(`${BASE44_CONFIG.apiUrl}/entities/Booking`, {
       headers: {
         'api_key': BASE44_CONFIG.apiKey,
         'Content-Type': 'application/json'
@@ -66,8 +122,10 @@ async function fetchBookings(businessId) {
       throw new Error(`Failed to fetch bookings: ${response.status}`);
     }
     
-    const data = await response.json();
-    return data;
+    const allBookings = await response.json();
+    
+    // Filter by business_id manually
+    return allBookings.filter(b => b.business_id === businessId);
   } catch (error) {
     console.error(`Error fetching bookings for business ${businessId}:`, error);
     return [];
@@ -82,24 +140,15 @@ async function sendReminderEmail(business, booking) {
     const emailBody = `
 שלום ${booking.client_name || 'לקוח יקר'},
 
-זוהי תזכורת לתור שלך ב-${business.name}
+תזכורת לתור שלך ${format(parseISO(booking.date), 'd בMMMM', { locale: he })} ב-${booking.time} ב-${business.name}
 
-📅 תאריך: ${format(parseISO(booking.date), 'EEEE, d בMMMM yyyy', { locale: he })}
-🕐 שעה: ${booking.time}
-✂️ שירות: ${booking.service_name}
-⏱️ משך: ${booking.duration} דקות
+שירות: ${booking.service_name} (${booking.duration} דק')
 
-${booking.notes ? `📝 הערות: ${booking.notes}\n\n` : ''}
-נשמח לראותך!
-
-${business.phone ? `📞 ${business.phone}` : ''}
-${business.email ? `✉️ ${business.email}` : ''}
-
-בברכה,
+נתראה! 
 צוות ${business.name}
     `.trim();
 
-    const response = await fetch(`${BASE44_CONFIG.apiUrl}/integrations/SendEmail`, {
+    const response = await fetch(`${BASE44_CONFIG.apiUrl}/integration-endpoints/Core/SendEmail`, {
       method: 'POST',
       headers: {
         'api_key': BASE44_CONFIG.apiKey,
@@ -165,16 +214,16 @@ async function processBusinessReminders(business) {
       continue;
     }
     
-    // Parse booking datetime
-    const bookingDateTime = parseISO(`${booking.date}T${booking.time}`);
+    // Parse booking datetime - assuming Israel timezone
+    const bookingDateTime = new Date(`${booking.date}T${booking.time}+02:00`);
     
     // Calculate hours until appointment
     const hoursUntil = differenceInHours(bookingDateTime, now);
     
     // Check if we should send reminder
-    // Send if: appointment is within the reminder window (e.g., 11-13 hours from now for 12h setting)
-    // This gives a 2-hour buffer window to catch appointments
-    const shouldSend = hoursUntil >= (reminderHours - 1) && hoursUntil <= (reminderHours + 1);
+    // Send if: appointment is within the reminder window (e.g., 10-14 hours from now for 12h setting)
+    // This gives a 4-hour buffer window to catch appointments
+    const shouldSend = hoursUntil >= (reminderHours - 2) && hoursUntil <= (reminderHours + 2);
     
     if (shouldSend) {
       // Check if we already sent to this booking
@@ -190,6 +239,7 @@ async function processBusinessReminders(business) {
       
       if (success) {
         sentReminders.add(reminderKey);
+        saveSentReminder(reminderKey);
         sentCount++;
       } else {
         skippedCount++;
@@ -250,7 +300,8 @@ async function checkAndSendReminders() {
  */
 function startReminderService() {
   console.log('🚀 Automated Reminder Service Started');
-  console.log(`⏰ Running checks every hour\n`);
+  console.log(`⏰ Running checks every hour`);
+  console.log(`🌍 Timezone: ${process.env.TZ || 'UTC'}\n`);
   
   // Run immediately on start
   checkAndSendReminders();
