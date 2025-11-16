@@ -1,17 +1,19 @@
 /**
- * Automated Reminder & Confirmation Service for Base44 Booking System
+ * Automated WhatsApp Reminder & Confirmation Service for Base44 Booking System
  * 
  * This service runs 24/7 and automatically:
- * - Sends email reminders before appointments (checked hourly)
- * - Sends confirmation emails when bookings are approved (checked every minute)
+ * - Sends WhatsApp reminders before appointments (checked hourly)
+ * - Sends WhatsApp confirmations when bookings are approved (checked every minute)
  * 
  * Features:
+ * - Uses WATI.io for WhatsApp messaging
  * - Checks every hour for bookings that need reminders
  * - Checks every minute for newly approved bookings
  * - Sends reminders X hours before appointment (configurable per business)
- * - Tracks sent emails in a file to avoid duplicates (survives restarts)
+ * - Tracks sent messages in a file to avoid duplicates (survives restarts)
  * - Supports multiple businesses
  * - Hebrew language support
+ * - Customizable message templates (edit the templates in this file)
  */
 
 import fetch from 'node-fetch';
@@ -29,7 +31,35 @@ const BASE44_CONFIG = {
   apiKey: 'd6ebcd1dd1844f4c8f98c35af622bde7',
 };
 
-// Files to track sent emails
+// WATI API Configuration
+const WATI_CONFIG = {
+  apiUrl: 'https://live-mt-server.wati.io/1047654',
+  accessToken: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJhNWM4YTFkYy0wNDUyLTQzNGMtYjFiYS1lZGRhY2I2OTNiYWQiLCJ1bmlxdWVfbmFtZSI6Inlha2lyY29oZW5Ac29sdmVkaWwub25taWNyb3NvZnQuY29tIiwibmFtZWlkIjoieWFraXJjb2hlbkBzb2x2ZWRpbC5vbm1pY3Jvc29mdC5jb20iLCJlbWFpbCI6Inlha2lyY29oZW5Ac29sdmVkaWwub25taWNyb3NvZnQuY29tIiwiYXV0aF90aW1lIjoiMTEvMTYvMjAyNSAxMzowODozMCIsInRlbmFudF9pZCI6IjEwNDc2NTQiLCJkYl9uYW1lIjoibXQtcHJvZC1UZW5hbnRzIiwiaHR0cDovL3NjaGVtYXMubWljcm9zb2Z0LmNvbS93cy8yMDA4LzA2L2lkZW50aXR5L2NsYWltcy9yb2xlIjoiQURNSU5JU1RSQVRPUiIsImV4cCI6MjUzNDAyMzAwODAwLCJpc3MiOiJDbGFyZV9BSSIsImF1ZCI6IkNsYXJlX0FJIn0.IP8Z5x8XwYS8UzIMPo2I59RRyZ6hAGm8y1mRBZFsEb4',
+};
+
+// MESSAGE TEMPLATES - Edit these to customize your messages!
+const MESSAGE_TEMPLATES = {
+  reminder: `שלום {client_name},
+
+תזכורת לתור שלך {date} ב-{time} ב-{business_name}
+
+שירות: {service_name} ({duration} דק')
+
+נתראה! 
+צוות {business_name}`,
+
+  confirmation: `שלום {client_name},
+
+התור שלך אושר! ✅
+
+📅 {date} ב-{time}
+✂️ {service_name} ({duration} דק')
+
+נתראה!
+{business_name}`
+};
+
+// Files to track sent messages
 const SENT_REMINDERS_FILE = path.join(process.cwd(), 'sent-reminders.json');
 const SENT_CONFIRMATIONS_FILE = path.join(process.cwd(), 'sent-confirmations.json');
 
@@ -146,60 +176,89 @@ async function fetchBookings(businessId) {
 }
 
 /**
- * Send email via Base44
+ * Format phone number for WhatsApp (remove leading 0, add country code if needed)
  */
-async function sendEmail(fromName, toEmail, subject, body) {
+function formatPhoneNumber(phone) {
+  if (!phone) return null;
+  
+  // Remove all non-digits
+  let cleaned = phone.replace(/\D/g, '');
+  
+  // If starts with 0, remove it (Israeli numbers)
+  if (cleaned.startsWith('0')) {
+    cleaned = cleaned.substring(1);
+  }
+  
+  // If doesn't start with country code, add Israel code (972)
+  if (!cleaned.startsWith('972')) {
+    cleaned = '972' + cleaned;
+  }
+  
+  return cleaned;
+}
+
+/**
+ * Replace template variables with actual values
+ */
+function fillTemplate(template, business, booking) {
+  return template
+    .replace(/{client_name}/g, booking.client_name || 'לקוח יקר')
+    .replace(/{date}/g, format(parseISO(booking.date), 'd בMMMM', { locale: he }))
+    .replace(/{time}/g, booking.time)
+    .replace(/{business_name}/g, business.name)
+    .replace(/{service_name}/g, booking.service_name)
+    .replace(/{duration}/g, booking.duration);
+}
+
+/**
+ * Send WhatsApp message via WATI
+ */
+async function sendWhatsAppMessage(phoneNumber, message) {
   try {
-    const response = await fetch(`${BASE44_CONFIG.apiUrl}/integration-endpoints/Core/SendEmail`, {
+    const formattedPhone = formatPhoneNumber(phoneNumber);
+    if (!formattedPhone) {
+      throw new Error('Invalid phone number');
+    }
+
+    const response = await fetch(`${WATI_CONFIG.apiUrl}/api/v1/sendSessionMessage/${formattedPhone}`, {
       method: 'POST',
       headers: {
-        'api_key': BASE44_CONFIG.apiKey,
+        'Authorization': WATI_CONFIG.accessToken,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        from_name: fromName,
-        to: toEmail,
-        subject: subject,
-        body: body
+        messageText: message
       })
     });
 
     if (!response.ok) {
-      throw new Error(`Failed to send email: ${response.status}`);
+      const errorText = await response.text();
+      throw new Error(`Failed to send WhatsApp: ${response.status} - ${errorText}`);
     }
 
     return true;
   } catch (error) {
-    console.error('Failed to send email:', error);
+    console.error('Failed to send WhatsApp message:', error);
     return false;
   }
 }
 
 /**
- * Send reminder email
+ * Send reminder WhatsApp message
  */
-async function sendReminderEmail(business, booking) {
+async function sendReminderWhatsApp(business, booking) {
   try {
-    const emailBody = `
-שלום ${booking.client_name || 'לקוח יקר'},
+    // Check if client has phone number
+    if (!booking.client_phone) {
+      console.log(`   ⏭️  No phone number for booking ${booking.id}`);
+      return false;
+    }
 
-תזכורת לתור שלך ${format(parseISO(booking.date), 'd בMMMM', { locale: he })} ב-${booking.time} ב-${business.name}
-
-שירות: ${booking.service_name} (${booking.duration} דק')
-
-נתראה! 
-צוות ${business.name}
-    `.trim();
-
-    const success = await sendEmail(
-      business.name,
-      booking.client_email,
-      `תזכורת לתור ב-${business.name} - ${booking.time}`,
-      emailBody
-    );
+    const message = fillTemplate(MESSAGE_TEMPLATES.reminder, business, booking);
+    const success = await sendWhatsAppMessage(booking.client_phone, message);
 
     if (success) {
-      console.log(`✅ Sent reminder to ${booking.client_email} for booking ${booking.id}`);
+      console.log(`✅ Sent WhatsApp reminder to ${booking.client_phone} for booking ${booking.id}`);
     }
     
     return success;
@@ -210,31 +269,21 @@ async function sendReminderEmail(business, booking) {
 }
 
 /**
- * Send confirmation email when booking is approved
+ * Send confirmation WhatsApp message when booking is approved
  */
-async function sendConfirmationEmail(business, booking) {
+async function sendConfirmationWhatsApp(business, booking) {
   try {
-    const emailBody = `
-שלום ${booking.client_name || 'לקוח יקר'},
+    // Check if client has phone number
+    if (!booking.client_phone) {
+      console.log(`   ⏭️  No phone number for booking ${booking.id}`);
+      return false;
+    }
 
-התור שלך אושר! ✅
-
-📅 ${format(parseISO(booking.date), 'd בMMMM', { locale: he })} ב-${booking.time}
-✂️ ${booking.service_name} (${booking.duration} דק')
-
-נתראה!
-${business.name}
-    `.trim();
-
-    const success = await sendEmail(
-      business.name,
-      booking.client_email,
-      `התור שלך אושר ב-${business.name}`,
-      emailBody
-    );
+    const message = fillTemplate(MESSAGE_TEMPLATES.confirmation, business, booking);
+    const success = await sendWhatsAppMessage(booking.client_phone, message);
 
     if (success) {
-      console.log(`✅ Sent confirmation to ${booking.client_email} for booking ${booking.id}`);
+      console.log(`✅ Sent WhatsApp confirmation to ${booking.client_phone} for booking ${booking.id}`);
     }
     
     return success;
@@ -245,7 +294,7 @@ ${business.name}
 }
 
 /**
- * Check for newly approved bookings and send confirmation emails
+ * Check for newly approved bookings and send confirmation WhatsApp messages
  */
 async function checkApprovals() {
   try {
@@ -255,14 +304,14 @@ async function checkApprovals() {
     let confirmationsSent = 0;
     
     for (const booking of allBookings) {
-      // Only process confirmed bookings with email
-      if (booking.status !== 'confirmed' || !booking.client_email) {
+      // Only process confirmed bookings with phone number
+      if (booking.status !== 'confirmed' || !booking.client_phone) {
         continue;
       }
       
       // Check if this is a newly confirmed booking (not booked by owner)
       if (booking.booked_by_owner) {
-        continue; // Owner bookings don't need confirmation emails
+        continue; // Owner bookings don't need confirmation messages
       }
       
       // Check if we already sent confirmation
@@ -277,8 +326,8 @@ async function checkApprovals() {
         continue;
       }
       
-      // Send confirmation email
-      const success = await sendConfirmationEmail(business, booking);
+      // Send confirmation WhatsApp
+      const success = await sendConfirmationWhatsApp(business, booking);
       
       if (success) {
         sentConfirmations.add(confirmationKey);
@@ -288,7 +337,7 @@ async function checkApprovals() {
     }
     
     if (confirmationsSent > 0) {
-      console.log(`📧 Sent ${confirmationsSent} confirmation email(s)`);
+      console.log(`📧 Sent ${confirmationsSent} WhatsApp confirmation(s)`);
     }
     
   } catch (error) {
@@ -330,8 +379,8 @@ async function processBusinessReminders(business) {
       continue;
     }
     
-    // Skip if no client email
-    if (!booking.client_email) {
+    // Skip if no client phone
+    if (!booking.client_phone) {
       skippedCount++;
       continue;
     }
@@ -357,7 +406,7 @@ async function processBusinessReminders(business) {
       }
       
       // Send the reminder
-      const success = await sendReminderEmail(business, booking);
+      const success = await sendReminderWhatsApp(business, booking);
       
       if (success) {
         sentReminders.add(reminderKey);
@@ -421,10 +470,11 @@ async function checkAndSendReminders() {
  * Start both services
  */
 function startServices() {
-  console.log('🚀 Automated Reminder & Confirmation Service Started');
+  console.log('🚀 Automated WhatsApp Reminder & Confirmation Service Started');
   console.log(`⏰ Reminder checks: every hour`);
   console.log(`📧 Approval checks: every minute`);
-  console.log(`🌍 Timezone: ${process.env.TZ || 'UTC'}\n`);
+  console.log(`🌍 Timezone: ${process.env.TZ || 'UTC'}`);
+  console.log(`📱 WhatsApp: WATI.io\n`);
   
   // Run reminder check immediately on start
   checkAndSendReminders();
