@@ -1,14 +1,12 @@
 /**
- * Automated SMS Reminder & Confirmation Service for Base44 Booking System
+ * Automated SMS Reminder Service for Base44 Booking System
  * 
  * This service runs 24/7 and automatically:
  * - Sends SMS reminders before appointments (checked hourly)
- * - Sends SMS confirmations when bookings are approved (checked every minute)
  * 
  * Features:
  * - Uses Twilio for SMS messaging
  * - Checks every hour for bookings that need reminders
- * - Checks every minute for newly approved bookings
  * - Sends reminders X hours before appointment (configurable per business)
  * - Tracks sent messages in a file to avoid duplicates (survives restarts)
  * - Supports multiple businesses
@@ -16,6 +14,8 @@
  * - Customizable message templates (edit the templates in this file)
  * 
  * SECURITY: Credentials are loaded from environment variables
+ * 
+ * NOTE: Confirmation messages are DISABLED to save SMS costs
  */
 
 import fetch from 'node-fetch';
@@ -47,31 +47,18 @@ if (!TWILIO_CONFIG.accountSid || !TWILIO_CONFIG.authToken || !TWILIO_CONFIG.phon
   process.exit(1);
 }
 
-// MESSAGE TEMPLATES - Edit these to customize your messages!
-const MESSAGE_TEMPLATES = {
-  reminder: `שלום {client_name},
+// MESSAGE TEMPLATE - Edit this to customize your reminder message!
+const MESSAGE_TEMPLATE = `שלום {client_name},
 
 תזכורת לתור שלך {date} ב-{time} ב-{business_name}
 
 שירות: {service_name} ({duration} דק')
 
 נתראה! 
-צוות {business_name}`,
+צוות {business_name}`;
 
-  confirmation: `שלום {client_name},
-
-התור שלך אושר! ✅
-
-📅 {date} ב-{time}
-✂️ {service_name} ({duration} דק')
-
-נתראה!
-{business_name}`
-};
-
-// Files to track sent messages
+// File to track sent messages
 const SENT_REMINDERS_FILE = path.join(process.cwd(), 'sent-reminders.json');
-const SENT_CONFIRMATIONS_FILE = path.join(process.cwd(), 'sent-confirmations.json');
 
 /**
  * Load sent items from file
@@ -122,8 +109,7 @@ function saveSentItem(filename, itemKey) {
 
 // Load sent items on startup
 const sentReminders = loadSentItems(SENT_REMINDERS_FILE);
-const sentConfirmations = loadSentItems(SENT_CONFIRMATIONS_FILE);
-console.log(`📋 Loaded ${sentReminders.size} sent reminders and ${sentConfirmations.size} sent confirmations from files`);
+console.log(`📋 Loaded ${sentReminders.size} sent reminders from file`);
 
 /**
  * Fetch all businesses from Base44
@@ -272,7 +258,7 @@ async function sendReminderSMS(business, booking) {
       return false;
     }
 
-    const message = fillTemplate(MESSAGE_TEMPLATES.reminder, business, booking);
+    const message = fillTemplate(MESSAGE_TEMPLATE, business, booking);
     const success = await sendSMS(booking.client_phone, message);
 
     if (success) {
@@ -283,83 +269,6 @@ async function sendReminderSMS(business, booking) {
   } catch (error) {
     console.error(`❌ Failed to send reminder for booking ${booking.id}:`, error);
     return false;
-  }
-}
-
-/**
- * Send confirmation SMS when booking is approved
- */
-async function sendConfirmationSMS(business, booking) {
-  try {
-    // Check if client has phone number
-    if (!booking.client_phone) {
-      console.log(`   ⏭️  No phone number for booking ${booking.id}`);
-      return false;
-    }
-
-    const message = fillTemplate(MESSAGE_TEMPLATES.confirmation, business, booking);
-    const success = await sendSMS(booking.client_phone, message);
-
-    if (success) {
-      console.log(`✅ Sent SMS confirmation to ${booking.client_phone} for booking ${booking.id}`);
-    }
-    
-    return success;
-  } catch (error) {
-    console.error(`❌ Failed to send confirmation for booking ${booking.id}:`, error);
-    return false;
-  }
-}
-
-/**
- * Check for newly approved bookings and send confirmation SMS messages
- */
-async function checkApprovals() {
-  try {
-    const businesses = await fetchBusinesses();
-    const allBookings = await fetchAllBookings();
-    
-    let confirmationsSent = 0;
-    
-    for (const booking of allBookings) {
-      // Only process confirmed bookings with phone number
-      if (booking.status !== 'confirmed' || !booking.client_phone) {
-        continue;
-      }
-      
-      // Check if this is a newly confirmed booking (not booked by owner)
-      if (booking.booked_by_owner) {
-        continue; // Owner bookings don't need confirmation messages
-      }
-      
-      // Check if we already sent confirmation
-      const confirmationKey = `${booking.id}-confirmed`;
-      if (sentConfirmations.has(confirmationKey)) {
-        continue;
-      }
-      
-      // Find the business
-      const business = businesses.find(b => b.id === booking.business_id);
-      if (!business) {
-        continue;
-      }
-      
-      // Send confirmation SMS
-      const success = await sendConfirmationSMS(business, booking);
-      
-      if (success) {
-        sentConfirmations.add(confirmationKey);
-        saveSentItem(SENT_CONFIRMATIONS_FILE, confirmationKey);
-        confirmationsSent++;
-      }
-    }
-    
-    if (confirmationsSent > 0) {
-      console.log(`📧 Sent ${confirmationsSent} SMS confirmation(s)`);
-    }
-    
-  } catch (error) {
-    console.error('❌ Error checking approvals:', error);
   }
 }
 
@@ -485,41 +394,34 @@ async function checkAndSendReminders() {
 }
 
 /**
- * Start both services
+ * Start the service
  */
-function startServices() {
-  console.log('🚀 Automated SMS Reminder & Confirmation Service Started');
+function startService() {
+  console.log('🚀 Automated SMS Reminder Service Started');
   console.log(`⏰ Reminder checks: every hour`);
-  console.log(`📧 Approval checks: every minute`);
   console.log(`🌍 Timezone: ${process.env.TZ || 'UTC'}`);
   console.log(`📱 SMS Provider: Twilio`);
-  console.log(`📞 From Number: ${TWILIO_CONFIG.phoneNumber}\n`);
+  console.log(`📞 From Number: ${TWILIO_CONFIG.phoneNumber}`);
+  console.log(`💡 Confirmations: DISABLED (reminders only to save costs)\n`);
   
   // Run reminder check immediately on start
   checkAndSendReminders();
   
-  // Run approval check immediately on start
-  checkApprovals();
-  
   // Schedule reminder checks every hour
   const ONE_HOUR = 60 * 60 * 1000;
   setInterval(checkAndSendReminders, ONE_HOUR);
-  
-  // Schedule approval checks every minute
-  const ONE_MINUTE = 60 * 1000;
-  setInterval(checkApprovals, ONE_MINUTE);
 }
 
-// Start the services
-startServices();
+// Start the service
+startService();
 
 // Handle graceful shutdown
 process.on('SIGTERM', () => {
-  console.log('\n🛑 Services shutting down...');
+  console.log('\n🛑 Service shutting down...');
   process.exit(0);
 });
 
 process.on('SIGINT', () => {
-  console.log('\n🛑 Services shutting down...');
+  console.log('\n🛑 Service shutting down...');
   process.exit(0);
 });
