@@ -1,12 +1,12 @@
 /**
- * Automated WhatsApp Reminder & Confirmation Service for Base44 Booking System
+ * Automated SMS Reminder & Confirmation Service for Base44 Booking System
  * 
  * This service runs 24/7 and automatically:
- * - Sends WhatsApp reminders before appointments (checked hourly)
- * - Sends WhatsApp confirmations when bookings are approved (checked every minute)
+ * - Sends SMS reminders before appointments (checked hourly)
+ * - Sends SMS confirmations when bookings are approved (checked every minute)
  * 
  * Features:
- * - Uses WATI.io for WhatsApp messaging
+ * - Uses Twilio for SMS messaging
  * - Checks every hour for bookings that need reminders
  * - Checks every minute for newly approved bookings
  * - Sends reminders X hours before appointment (configurable per business)
@@ -31,10 +31,11 @@ const BASE44_CONFIG = {
   apiKey: 'd6ebcd1dd1844f4c8f98c35af622bde7',
 };
 
-// WATI API Configuration
-const WATI_CONFIG = {
-  apiUrl: 'https://live-mt-server.wati.io/1047654',
-  accessToken: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJhNWM4YTFkYy0wNDUyLTQzNGMtYjFiYS1lZGRhY2I2OTNiYWQiLCJ1bmlxdWVfbmFtZSI6Inlha2lyY29oZW5Ac29sdmVkaWwub25taWNyb3NvZnQuY29tIiwibmFtZWlkIjoieWFraXJjb2hlbkBzb2x2ZWRpbC5vbm1pY3Jvc29mdC5jb20iLCJlbWFpbCI6Inlha2lyY29oZW5Ac29sdmVkaWwub25taWNyb3NvZnQuY29tIiwiYXV0aF90aW1lIjoiMTEvMTYvMjAyNSAxMzowODozMCIsInRlbmFudF9pZCI6IjEwNDc2NTQiLCJkYl9uYW1lIjoibXQtcHJvZC1UZW5hbnRzIiwiaHR0cDovL3NjaGVtYXMubWljcm9zb2Z0LmNvbS93cy8yMDA4LzA2L2lkZW50aXR5L2NsYWltcy9yb2xlIjoiQURNSU5JU1RSQVRPUiIsImV4cCI6MjUzNDAyMzAwODAwLCJpc3MiOiJDbGFyZV9BSSIsImF1ZCI6IkNsYXJlX0FJIn0.IP8Z5x8XwYS8UzIMPo2I59RRyZ6hAGm8y1mRBZFsEb4',
+// Twilio API Configuration
+const TWILIO_CONFIG = {
+  accountSid: 'ACa59ff3a9b0c8ed933bfa214c68154b78',
+  authToken: 'ba26df5822b832a9006be1b44638144e',
+  phoneNumber: '+16184404560',
 };
 
 // MESSAGE TEMPLATES - Edit these to customize your messages!
@@ -176,7 +177,7 @@ async function fetchBookings(businessId) {
 }
 
 /**
- * Format phone number for WhatsApp (remove leading 0, add country code if needed)
+ * Format phone number for SMS (remove leading 0, add country code if needed)
  */
 function formatPhoneNumber(phone) {
   if (!phone) return null;
@@ -194,7 +195,7 @@ function formatPhoneNumber(phone) {
     cleaned = '972' + cleaned;
   }
   
-  return cleaned;
+  return '+' + cleaned;
 }
 
 /**
@@ -211,42 +212,50 @@ function fillTemplate(template, business, booking) {
 }
 
 /**
- * Send WhatsApp message via WATI
+ * Send SMS via Twilio
  */
-async function sendWhatsAppMessage(phoneNumber, message) {
+async function sendSMS(toNumber, message) {
   try {
-    const formattedPhone = formatPhoneNumber(phoneNumber);
-    if (!formattedPhone) {
+    const formattedNumber = formatPhoneNumber(toNumber);
+    if (!formattedNumber) {
       throw new Error('Invalid phone number');
     }
 
-    const response = await fetch(`${WATI_CONFIG.apiUrl}/api/v1/sendSessionMessage/${formattedPhone}`, {
+    const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_CONFIG.accountSid}/Messages.json`;
+    
+    const params = new URLSearchParams();
+    params.append('To', formattedNumber);
+    params.append('From', TWILIO_CONFIG.phoneNumber);
+    params.append('Body', message);
+
+    const auth = Buffer.from(`${TWILIO_CONFIG.accountSid}:${TWILIO_CONFIG.authToken}`).toString('base64');
+
+    const response = await fetch(url, {
       method: 'POST',
       headers: {
-        'Authorization': WATI_CONFIG.accessToken,
-        'Content-Type': 'application/json'
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/x-www-form-urlencoded'
       },
-      body: JSON.stringify({
-        messageText: message
-      })
+      body: params
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Failed to send WhatsApp: ${response.status} - ${errorText}`);
+      throw new Error(`Failed to send SMS: ${response.status} - ${errorText}`);
     }
 
+    const result = await response.json();
     return true;
   } catch (error) {
-    console.error('Failed to send WhatsApp message:', error);
+    console.error('Failed to send SMS:', error);
     return false;
   }
 }
 
 /**
- * Send reminder WhatsApp message
+ * Send reminder SMS
  */
-async function sendReminderWhatsApp(business, booking) {
+async function sendReminderSMS(business, booking) {
   try {
     // Check if client has phone number
     if (!booking.client_phone) {
@@ -255,10 +264,10 @@ async function sendReminderWhatsApp(business, booking) {
     }
 
     const message = fillTemplate(MESSAGE_TEMPLATES.reminder, business, booking);
-    const success = await sendWhatsAppMessage(booking.client_phone, message);
+    const success = await sendSMS(booking.client_phone, message);
 
     if (success) {
-      console.log(`✅ Sent WhatsApp reminder to ${booking.client_phone} for booking ${booking.id}`);
+      console.log(`✅ Sent SMS reminder to ${booking.client_phone} for booking ${booking.id}`);
     }
     
     return success;
@@ -269,9 +278,9 @@ async function sendReminderWhatsApp(business, booking) {
 }
 
 /**
- * Send confirmation WhatsApp message when booking is approved
+ * Send confirmation SMS when booking is approved
  */
-async function sendConfirmationWhatsApp(business, booking) {
+async function sendConfirmationSMS(business, booking) {
   try {
     // Check if client has phone number
     if (!booking.client_phone) {
@@ -280,10 +289,10 @@ async function sendConfirmationWhatsApp(business, booking) {
     }
 
     const message = fillTemplate(MESSAGE_TEMPLATES.confirmation, business, booking);
-    const success = await sendWhatsAppMessage(booking.client_phone, message);
+    const success = await sendSMS(booking.client_phone, message);
 
     if (success) {
-      console.log(`✅ Sent WhatsApp confirmation to ${booking.client_phone} for booking ${booking.id}`);
+      console.log(`✅ Sent SMS confirmation to ${booking.client_phone} for booking ${booking.id}`);
     }
     
     return success;
@@ -294,7 +303,7 @@ async function sendConfirmationWhatsApp(business, booking) {
 }
 
 /**
- * Check for newly approved bookings and send confirmation WhatsApp messages
+ * Check for newly approved bookings and send confirmation SMS messages
  */
 async function checkApprovals() {
   try {
@@ -326,8 +335,8 @@ async function checkApprovals() {
         continue;
       }
       
-      // Send confirmation WhatsApp
-      const success = await sendConfirmationWhatsApp(business, booking);
+      // Send confirmation SMS
+      const success = await sendConfirmationSMS(business, booking);
       
       if (success) {
         sentConfirmations.add(confirmationKey);
@@ -337,7 +346,7 @@ async function checkApprovals() {
     }
     
     if (confirmationsSent > 0) {
-      console.log(`📧 Sent ${confirmationsSent} WhatsApp confirmation(s)`);
+      console.log(`📧 Sent ${confirmationsSent} SMS confirmation(s)`);
     }
     
   } catch (error) {
@@ -406,7 +415,7 @@ async function processBusinessReminders(business) {
       }
       
       // Send the reminder
-      const success = await sendReminderWhatsApp(business, booking);
+      const success = await sendReminderSMS(business, booking);
       
       if (success) {
         sentReminders.add(reminderKey);
@@ -470,11 +479,12 @@ async function checkAndSendReminders() {
  * Start both services
  */
 function startServices() {
-  console.log('🚀 Automated WhatsApp Reminder & Confirmation Service Started');
+  console.log('🚀 Automated SMS Reminder & Confirmation Service Started');
   console.log(`⏰ Reminder checks: every hour`);
   console.log(`📧 Approval checks: every minute`);
   console.log(`🌍 Timezone: ${process.env.TZ || 'UTC'}`);
-  console.log(`📱 WhatsApp: WATI.io\n`);
+  console.log(`📱 SMS Provider: Twilio`);
+  console.log(`📞 From Number: ${TWILIO_CONFIG.phoneNumber}\n`);
   
   // Run reminder check immediately on start
   checkAndSendReminders();
