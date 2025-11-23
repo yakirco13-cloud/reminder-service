@@ -14,6 +14,8 @@
  * - Supports multiple businesses
  * - Hebrew language support
  * - Customizable message templates (edit the templates in this file)
+ * 
+ * SECURITY: Credentials are loaded from environment variables
  */
 
 import fetch from 'node-fetch';
@@ -31,12 +33,19 @@ const BASE44_CONFIG = {
   apiKey: 'd6ebcd1dd1844f4c8f98c35af622bde7',
 };
 
-// Twilio API Configuration
+// Twilio API Configuration - LOADED FROM ENVIRONMENT VARIABLES
 const TWILIO_CONFIG = {
-  accountSid: 'ACa59ff3a9b0c8ed933bfa214c68154b78',
-  authToken: 'ba26df5822b832a9006be1b44638144e',
-  phoneNumber: '+16184404560',
+  accountSid: process.env.TWILIO_ACCOUNT_SID,
+  authToken: process.env.TWILIO_AUTH_TOKEN,
+  phoneNumber: process.env.TWILIO_PHONE_NUMBER,
 };
+
+// Validate that all required environment variables are set
+if (!TWILIO_CONFIG.accountSid || !TWILIO_CONFIG.authToken || !TWILIO_CONFIG.phoneNumber) {
+  console.error('❌ ERROR: Missing Twilio credentials in environment variables!');
+  console.error('Please set: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER');
+  process.exit(1);
+}
 
 // MESSAGE TEMPLATES - Edit these to customize your messages!
 const MESSAGE_TEMPLATES = {
