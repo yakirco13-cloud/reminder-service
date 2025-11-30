@@ -396,11 +396,37 @@ async function checkAndSendReminders() {
 }
 
 /**
+ * Schedule next run at fixed time (:00, :15, :30, :45)
+ */
+function scheduleNextRun() {
+  const now = new Date();
+  const minutes = now.getMinutes();
+  const seconds = now.getSeconds();
+  const milliseconds = now.getMilliseconds();
+  
+  // Calculate minutes until next :00, :15, :30, or :45
+  const nextSlot = Math.ceil((minutes + 1) / 15) * 15;
+  const minutesUntilNext = nextSlot - minutes;
+  
+  // Calculate total milliseconds until next slot
+  const msUntilNext = (minutesUntilNext * 60 * 1000) - (seconds * 1000) - milliseconds;
+  
+  const nextRunTime = new Date(now.getTime() + msUntilNext);
+  console.log(`⏰ Next check scheduled at: ${nextRunTime.toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem' })}`);
+  
+  setTimeout(() => {
+    checkAndSendReminders();
+    // After running, schedule the next one in exactly 15 minutes
+    setInterval(checkAndSendReminders, 15 * 60 * 1000);
+  }, msUntilNext);
+}
+
+/**
  * Start the service
  */
 function startService() {
   console.log('🚀 Automated WhatsApp Reminder Service Started');
-  console.log(`⏰ Reminder checks: every 15 minutes`);
+  console.log(`⏰ Reminder checks: at :00, :15, :30, :45 of every hour`);
   console.log(`🎯 Timing: SUPER PRECISE (±10 minutes of target time)`);
   console.log(`🌍 Timezone: ${process.env.TZ || 'UTC'}`);
   console.log(`📱 Provider: Twilio WhatsApp`);
@@ -412,9 +438,8 @@ function startService() {
   // Run reminder check immediately on start
   checkAndSendReminders();
   
-  // Schedule reminder checks every 15 minutes
-  const FIFTEEN_MINUTES = 15 * 60 * 1000;
-  setInterval(checkAndSendReminders, FIFTEEN_MINUTES);
+  // Schedule next run at fixed time
+  scheduleNextRun();
 }
 
 // Start the service
