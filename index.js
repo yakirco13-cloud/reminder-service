@@ -1,25 +1,27 @@
 /**
- * Automated SMS Reminder Service for Base44 Booking System
+ * Automated WhatsApp Reminder Service for Base44 Booking System
  * 
  * This service runs 24/7 and automatically:
- * - Sends SMS reminders before appointments (checked hourly)
+ * - Sends WhatsApp reminders before appointments (checked hourly)
  * 
  * Features:
- * - Uses Twilio for SMS messaging
+ * - Uses Twilio WhatsApp API
  * - Checks every hour for bookings that need reminders
  * - PRECISE TIMING: Sends reminders exactly X hours before (±30 min window)
  * - Tracks sent messages in a file to avoid duplicates (survives restarts)
  * - Supports multiple businesses
  * - Hebrew language support
- * - Customizable message templates (edit the templates in this file)
+ * - Uses approved WhatsApp template
  * 
  * SECURITY: Credentials are loaded from environment variables
  * 
- * NOTE: Confirmation messages are DISABLED to save SMS costs
+ * NOTE: Confirmation messages are DISABLED to save costs
+ * 
+ * COST: $0.005 per WhatsApp message (52x cheaper than SMS!)
  */
 
 import fetch from 'node-fetch';
-import { format, parseISO, differenceInHours, differenceInMinutes } from 'date-fns';
+import { format, parseISO, differenceInMinutes } from 'date-fns';
 import { he } from 'date-fns/locale';
 import fs from 'fs';
 import path from 'path';
@@ -33,29 +35,20 @@ const BASE44_CONFIG = {
   apiKey: 'd6ebcd1dd1844f4c8f98c35af622bde7',
 };
 
-// Twilio API Configuration - LOADED FROM ENVIRONMENT VARIABLES
+// Twilio WhatsApp Configuration - LOADED FROM ENVIRONMENT VARIABLES
 const TWILIO_CONFIG = {
   accountSid: process.env.TWILIO_ACCOUNT_SID,
   authToken: process.env.TWILIO_AUTH_TOKEN,
-  phoneNumber: process.env.TWILIO_PHONE_NUMBER,
+  whatsappNumber: process.env.TWILIO_WHATSAPP_NUMBER, // whatsapp:+15558717047
+  templateSid: process.env.TWILIO_TEMPLATE_SID, // HX5abe889e6eb7edfb9ea5ccf39f5e5b84
 };
 
 // Validate that all required environment variables are set
-if (!TWILIO_CONFIG.accountSid || !TWILIO_CONFIG.authToken || !TWILIO_CONFIG.phoneNumber) {
+if (!TWILIO_CONFIG.accountSid || !TWILIO_CONFIG.authToken || !TWILIO_CONFIG.whatsappNumber || !TWILIO_CONFIG.templateSid) {
   console.error('❌ ERROR: Missing Twilio credentials in environment variables!');
-  console.error('Please set: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER');
+  console.error('Please set: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_NUMBER, TWILIO_TEMPLATE_SID');
   process.exit(1);
 }
-
-// MESSAGE TEMPLATE - Edit this to customize your reminder message!
-const MESSAGE_TEMPLATE = `שלום {client_name},
-
-תזכורת לתור שלך {date} ב-{time} ב-{business_name}
-
-שירות: {service_name} ({duration} דק')
-
-נתראה! 
-צוות {business_name}`;
 
 // File to track sent messages
 const SENT_REMINDERS_FILE = path.join(process.cwd(), 'sent-reminders.json');
@@ -172,7 +165,7 @@ async function fetchBookings(businessId) {
 }
 
 /**
- * Format phone number for SMS (remove leading 0, add country code if needed)
+ * Format phone number for WhatsApp (remove leading 0, add country code if needed)
  */
 function formatPhoneNumber(phone) {
   if (!phone) return null;
@@ -190,26 +183,13 @@ function formatPhoneNumber(phone) {
     cleaned = '972' + cleaned;
   }
   
-  return '+' + cleaned;
+  return 'whatsapp:+' + cleaned;
 }
 
 /**
- * Replace template variables with actual values
+ * Send WhatsApp message via Twilio using Content Template
  */
-function fillTemplate(template, business, booking) {
-  return template
-    .replace(/{client_name}/g, booking.client_name || 'לקוח יקר')
-    .replace(/{date}/g, format(parseISO(booking.date), 'd בMMMM', { locale: he }))
-    .replace(/{time}/g, booking.time)
-    .replace(/{business_name}/g, business.name)
-    .replace(/{service_name}/g, booking.service_name)
-    .replace(/{duration}/g, booking.duration);
-}
-
-/**
- * Send SMS via Twilio
- */
-async function sendSMS(toNumber, message) {
+async function sendWhatsAppMessage(toNumber, business, booking) {
   try {
     const formattedNumber = formatPhoneNumber(toNumber);
     if (!formattedNumber) {
@@ -218,10 +198,30 @@ async function sendSMS(toNumber, message) {
 
     const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_CONFIG.accountSid}/Messages.json`;
     
+    // Format date in Hebrew
+    const formattedDate = format(parseISO(booking.date), 'd בMMMM', { locale: he });
+    
+    // Template variables in order:
+    // {{1}} = client_name
+    // {{2}} = date
+    // {{3}} = time
+    // {{4}} = business_name
+    // {{5}} = service_name
+    // {{6}} = duration
+    const contentVariables = JSON.stringify({
+      "1": booking.client_name || 'לקוח יקר',
+      "2": formattedDate,
+      "3": booking.time,
+      "4": business.name,
+      "5": booking.service_name,
+      "6": booking.duration.toString()
+    });
+
     const params = new URLSearchParams();
     params.append('To', formattedNumber);
-    params.append('From', TWILIO_CONFIG.phoneNumber);
-    params.append('Body', message);
+    params.append('From', TWILIO_CONFIG.whatsappNumber);
+    params.append('ContentSid', TWILIO_CONFIG.templateSid);
+    params.append('ContentVariables', contentVariables);
 
     const auth = Buffer.from(`${TWILIO_CONFIG.accountSid}:${TWILIO_CONFIG.authToken}`).toString('base64');
 
@@ -236,21 +236,21 @@ async function sendSMS(toNumber, message) {
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Failed to send SMS: ${response.status} - ${errorText}`);
+      throw new Error(`Failed to send WhatsApp: ${response.status} - ${errorText}`);
     }
 
     const result = await response.json();
     return true;
   } catch (error) {
-    console.error('Failed to send SMS:', error);
+    console.error('Failed to send WhatsApp message:', error);
     return false;
   }
 }
 
 /**
- * Send reminder SMS
+ * Send reminder WhatsApp
  */
-async function sendReminderSMS(business, booking) {
+async function sendReminderWhatsApp(business, booking) {
   try {
     // Check if client has phone number
     if (!booking.client_phone) {
@@ -258,11 +258,10 @@ async function sendReminderSMS(business, booking) {
       return false;
     }
 
-    const message = fillTemplate(MESSAGE_TEMPLATE, business, booking);
-    const success = await sendSMS(booking.client_phone, message);
+    const success = await sendWhatsAppMessage(booking.client_phone, business, booking);
 
     if (success) {
-      console.log(`✅ Sent SMS reminder to ${booking.client_phone} for booking ${booking.id}`);
+      console.log(`✅ Sent WhatsApp reminder to ${booking.client_phone} for booking ${booking.id}`);
     }
     
     return success;
@@ -336,10 +335,10 @@ async function processBusinessReminders(business) {
         continue;
       }
       
-      console.log(`   📤 Sending reminder for booking ${booking.id} (${hoursUntil.toFixed(1)}h before appointment)`);
+      console.log(`   📤 Sending WhatsApp reminder for booking ${booking.id} (${hoursUntil.toFixed(1)}h before appointment)`);
       
       // Send the reminder
-      const success = await sendReminderSMS(business, booking);
+      const success = await sendReminderWhatsApp(business, booking);
       
       if (success) {
         sentReminders.add(reminderKey);
@@ -365,7 +364,7 @@ async function processBusinessReminders(business) {
  */
 async function checkAndSendReminders() {
   console.log('\n' + '='.repeat(60));
-  console.log(`🔔 Reminder Check Started: ${new Date().toISOString()}`);
+  console.log(`🔔 WhatsApp Reminder Check Started: ${new Date().toISOString()}`);
   console.log('='.repeat(60));
   
   try {
@@ -390,8 +389,9 @@ async function checkAndSendReminders() {
     console.log('📊 Summary:');
     const totalSent = results.reduce((sum, r) => sum + r.sent, 0);
     const totalSkipped = results.reduce((sum, r) => sum + (r.skipped || 0), 0);
-    console.log(`   Total reminders sent: ${totalSent}`);
+    console.log(`   Total WhatsApp reminders sent: ${totalSent}`);
     console.log(`   Total skipped: ${totalSkipped}`);
+    console.log(`   💰 Cost: $${(totalSent * 0.005).toFixed(3)} (at $0.005/message)`);
     console.log('='.repeat(60) + '\n');
     
   } catch (error) {
@@ -403,12 +403,14 @@ async function checkAndSendReminders() {
  * Start the service
  */
 function startService() {
-  console.log('🚀 Automated SMS Reminder Service Started');
+  console.log('🚀 Automated WhatsApp Reminder Service Started');
   console.log(`⏰ Reminder checks: every hour`);
   console.log(`🎯 Timing: PRECISE (±30 minutes of target time)`);
   console.log(`🌍 Timezone: ${process.env.TZ || 'UTC'}`);
-  console.log(`📱 SMS Provider: Twilio`);
-  console.log(`📞 From Number: ${TWILIO_CONFIG.phoneNumber}`);
+  console.log(`📱 Provider: Twilio WhatsApp`);
+  console.log(`📞 From Number: ${TWILIO_CONFIG.whatsappNumber}`);
+  console.log(`📋 Template SID: ${TWILIO_CONFIG.templateSid}`);
+  console.log(`💰 Cost: $0.005 per message (52x cheaper than SMS!)`);
   console.log(`💡 Confirmations: DISABLED (reminders only to save costs)\n`);
   
   // Run reminder check immediately on start
