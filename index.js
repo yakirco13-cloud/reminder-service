@@ -201,20 +201,16 @@ async function sendWhatsAppMessage(toNumber, business, booking) {
     // Format date in Hebrew
     const formattedDate = format(parseISO(booking.date), 'd בMMMM', { locale: he });
     
-    // Template variables in order:
-    // {{1}} = client_name
-    // {{2}} = date
-    // {{3}} = time
-    // {{4}} = business_name
-    // {{5}} = service_name
-    // {{6}} = duration
+    // Template variables in order (matching Twilio template):
+    // {{1}} = client_name (שלום {{1}})
+    // {{2}} = business_name (מאת צוות {{2}})
+    // {{3}} = date (בתאריך {{3}})
+    // {{4}} = time (בשעה {{4}})
     const contentVariables = JSON.stringify({
       "1": booking.client_name || 'לקוח יקר',
-      "2": formattedDate,
-      "3": booking.time,
-      "4": business.name,
-      "5": booking.service_name,
-      "6": booking.duration.toString()
+      "2": business.name,
+      "3": formattedDate,
+      "4": booking.time
     });
 
     const params = new URLSearchParams();
