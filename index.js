@@ -2,12 +2,12 @@
  * Automated WhatsApp Reminder Service for Base44 Booking System
  * 
  * This service runs 24/7 and automatically:
- * - Sends WhatsApp reminders before appointments (checked hourly)
+ * - Sends WhatsApp reminders before appointments (checked every 15 minutes)
  * 
  * Features:
  * - Uses Twilio WhatsApp API
- * - Checks every hour for bookings that need reminders
- * - PRECISE TIMING: Sends reminders exactly X hours before (±30 min window)
+ * - Checks every 15 minutes for bookings that need reminders (PRECISE!)
+ * - PRECISE TIMING: Sends reminders exactly X hours before (±10 min window)
  * - Tracks sent messages in a file to avoid duplicates (survives restarts)
  * - Supports multiple businesses
  * - Hebrew language support
@@ -318,11 +318,11 @@ async function processBusinessReminders(business) {
     const minutesUntil = differenceInMinutes(bookingDateTime, now);
     const hoursUntil = minutesUntil / 60;
     
-    // PRECISE TIMING: Send if within ±30 minutes of the target reminder time
-    // Example: If reminder is set for 3 hours, send between 2.5-3.5 hours before
+    // PRECISE TIMING: Send if within ±10 minutes of the target reminder time
+    // Example: If reminder is set for 3 hours, send between 2h50m-3h10m before
     const targetMinutes = reminderHours * 60;
-    const lowerBound = targetMinutes - 30; // 30 min before target
-    const upperBound = targetMinutes + 30; // 30 min after target
+    const lowerBound = targetMinutes - 10; // 10 min before target
+    const upperBound = targetMinutes + 10; // 10 min after target
     
     const shouldSend = minutesUntil >= lowerBound && minutesUntil <= upperBound;
     
@@ -404,8 +404,8 @@ async function checkAndSendReminders() {
  */
 function startService() {
   console.log('🚀 Automated WhatsApp Reminder Service Started');
-  console.log(`⏰ Reminder checks: every hour`);
-  console.log(`🎯 Timing: PRECISE (±30 minutes of target time)`);
+  console.log(`⏰ Reminder checks: every 15 minutes`);
+  console.log(`🎯 Timing: SUPER PRECISE (±10 minutes of target time)`);
   console.log(`🌍 Timezone: ${process.env.TZ || 'UTC'}`);
   console.log(`📱 Provider: Twilio WhatsApp`);
   console.log(`📞 From Number: ${TWILIO_CONFIG.whatsappNumber}`);
@@ -416,9 +416,9 @@ function startService() {
   // Run reminder check immediately on start
   checkAndSendReminders();
   
-  // Schedule reminder checks every hour
-  const ONE_HOUR = 60 * 60 * 1000;
-  setInterval(checkAndSendReminders, ONE_HOUR);
+  // Schedule reminder checks every 15 minutes
+  const FIFTEEN_MINUTES = 15 * 60 * 1000;
+  setInterval(checkAndSendReminders, FIFTEEN_MINUTES);
 }
 
 // Start the service
