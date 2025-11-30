@@ -290,29 +290,41 @@ async function processBusinessReminders(business) {
     return { business: business.name, sent: 0 };
   }
 
+  console.log(`   Found ${bookings.length} booking(s)`);
+
   let sentCount = 0;
   let skippedCount = 0;
   
   const now = new Date();
+  console.log(`   Current time: ${now.toLocaleString('he-IL', { timeZone: 'Asia/Jerusalem' })}`);
   
   for (const booking of bookings) {
+    console.log(`\n   --- Booking ${booking.id} ---`);
+    console.log(`   Client: ${booking.client_name}, Phone: ${booking.client_phone || 'NO PHONE'}`);
+    console.log(`   Date: ${booking.date}, Time: ${booking.time}, Status: ${booking.status}`);
+    
     // Only process confirmed bookings
     if (booking.status !== 'confirmed') {
+      console.log(`   ⏭️  SKIPPED: Status is "${booking.status}" (not confirmed)`);
+      skippedCount++;
       continue;
     }
     
     // Skip if no client phone
     if (!booking.client_phone) {
+      console.log(`   ⏭️  SKIPPED: No phone number`);
       skippedCount++;
       continue;
     }
     
     // Parse booking datetime - assuming Israel timezone
     const bookingDateTime = new Date(`${booking.date}T${booking.time}+02:00`);
+    console.log(`   Appointment: ${bookingDateTime.toLocaleString('he-IL', { timeZone: 'Asia/Jerusalem' })}`);
     
     // Calculate exact minutes until appointment
     const minutesUntil = differenceInMinutes(bookingDateTime, now);
     const hoursUntil = minutesUntil / 60;
+    console.log(`   Time until appointment: ${hoursUntil.toFixed(2)} hours (${minutesUntil} minutes)`);
     
     // PRECISE TIMING: Send if within ±10 minutes of the target reminder time
     // Example: If reminder is set for 3 hours, send between 2h50m-3h10m before
@@ -320,33 +332,43 @@ async function processBusinessReminders(business) {
     const lowerBound = targetMinutes - 10; // 10 min before target
     const upperBound = targetMinutes + 10; // 10 min after target
     
+    console.log(`   Reminder window: ${lowerBound}-${upperBound} minutes (${(lowerBound/60).toFixed(2)}h - ${(upperBound/60).toFixed(2)}h)`);
+    
     const shouldSend = minutesUntil >= lowerBound && minutesUntil <= upperBound;
     
-    if (shouldSend) {
-      // Check if we already sent to this booking
-      const reminderKey = `${booking.id}-${booking.date}-${booking.time}`;
-      if (sentReminders.has(reminderKey)) {
-        console.log(`   ⏭️  Already sent reminder for booking ${booking.id}`);
-        skippedCount++;
-        continue;
-      }
-      
-      console.log(`   📤 Sending WhatsApp reminder for booking ${booking.id} (${hoursUntil.toFixed(1)}h before appointment)`);
-      
-      // Send the reminder
-      const success = await sendReminderWhatsApp(business, booking);
-      
-      if (success) {
-        sentReminders.add(reminderKey);
-        saveSentItem(SENT_REMINDERS_FILE, reminderKey);
-        sentCount++;
+    if (!shouldSend) {
+      if (minutesUntil < lowerBound) {
+        console.log(`   ⏭️  SKIPPED: Too late (appointment in ${hoursUntil.toFixed(2)}h, reminder was for ${reminderHours}h before)`);
       } else {
-        skippedCount++;
+        console.log(`   ⏭️  SKIPPED: Too early (appointment in ${hoursUntil.toFixed(2)}h, reminder is for ${reminderHours}h before)`);
       }
+      skippedCount++;
+      continue;
+    }
+    
+    // Check if we already sent to this booking
+    const reminderKey = `${booking.id}-${booking.date}-${booking.time}`;
+    if (sentReminders.has(reminderKey)) {
+      console.log(`   ⏭️  SKIPPED: Already sent reminder for this booking`);
+      skippedCount++;
+      continue;
+    }
+    
+    console.log(`   ✅ SENDING WhatsApp reminder (${hoursUntil.toFixed(1)}h before appointment)`);
+    
+    // Send the reminder
+    const success = await sendReminderWhatsApp(business, booking);
+    
+    if (success) {
+      sentReminders.add(reminderKey);
+      saveSentItem(SENT_REMINDERS_FILE, reminderKey);
+      sentCount++;
+    } else {
+      skippedCount++;
     }
   }
   
-  console.log(`   📊 Results: ${sentCount} sent, ${skippedCount} skipped`);
+  console.log(`\n   📊 Results: ${sentCount} sent, ${skippedCount} skipped`);
   
   return {
     business: business.name,
