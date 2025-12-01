@@ -1,25 +1,31 @@
 /**
- * Automated WhatsApp Reminder Service for Base44 Booking System
+ * Automated WhatsApp Service for Base44 Booking System
  * 
- * This service runs 24/7 and automatically:
- * - Sends WhatsApp reminders before appointments (checked every 15 minutes)
+ * This service runs 24/7 and provides:
+ * - Automatic WhatsApp reminders before appointments (checked every 15 minutes)
+ * - API endpoints for sending confirmation, update, and broadcast messages
  * 
  * Features:
  * - Uses Twilio WhatsApp API
- * - Checks every 15 minutes for bookings that need reminders (PRECISE!)
+ * - Express server for API endpoints
+ * - Checks every 15 minutes for bookings that need reminders
  * - PRECISE TIMING: Sends reminders exactly X hours before (±10 min window)
  * - Tracks sent messages in a file to avoid duplicates (survives restarts)
  * - Supports multiple businesses
  * - Hebrew language support
- * - Uses approved WhatsApp template
+ * - Respects user notification preferences (whatsapp_notifications_enabled)
+ * 
+ * API Endpoints:
+ * - POST /api/send-confirmation - Send booking confirmation
+ * - POST /api/send-update - Send booking update/cancellation notification
+ * - POST /api/send-broadcast - Send broadcast message to all clients
+ * - GET /health - Health check
  * 
  * SECURITY: Credentials are loaded from environment variables
- * 
- * NOTE: Confirmation messages are DISABLED to save costs
- * 
- * COST: $0.005 per WhatsApp message (52x cheaper than SMS!)
  */
 
+import express from 'express';
+import cors from 'cors';
 import fetch from 'node-fetch';
 import { format, parseISO, differenceInMinutes } from 'date-fns';
 import { he } from 'date-fns/locale';
@@ -28,6 +34,13 @@ import path from 'path';
 
 // Set timezone to Israel (GMT+2)
 process.env.TZ = 'Asia/Jerusalem';
+
+// Initialize Express
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+const PORT = process.env.PORT || 3000;
 
 // Base44 API Configuration
 const BASE44_CONFIG = {
@@ -39,12 +52,16 @@ const BASE44_CONFIG = {
 const TWILIO_CONFIG = {
   accountSid: process.env.TWILIO_ACCOUNT_SID,
   authToken: process.env.TWILIO_AUTH_TOKEN,
-  whatsappNumber: process.env.TWILIO_WHATSAPP_NUMBER, // whatsapp:+15558717047
-  templateSid: process.env.TWILIO_TEMPLATE_SID, // HX5abe889e6eb7edfb9ea5ccf39f5e5b84
+  whatsappNumber: process.env.TWILIO_WHATSAPP_NUMBER,
+  // Template SIDs
+  reminderTemplateSid: process.env.TWILIO_TEMPLATE_SID, // Existing reminder template
+  confirmationTemplateSid: 'HX835cc8141398f0a037c21e061404bba0',
+  updateTemplateSid: 'HXfb6f60eb9acb068d3100d204e8d866b9',
+  broadcastTemplateSid: 'HXd94763214416ec4100848e81162aad92',
 };
 
 // Validate that all required environment variables are set
-if (!TWILIO_CONFIG.accountSid || !TWILIO_CONFIG.authToken || !TWILIO_CONFIG.whatsappNumber || !TWILIO_CONFIG.templateSid) {
+if (!TWILIO_CONFIG.accountSid || !TWILIO_CONFIG.authToken || !TWILIO_CONFIG.whatsappNumber || !TWILIO_CONFIG.reminderTemplateSid) {
   console.error('❌ ERROR: Missing Twilio credentials in environment variables!');
   console.error('Please set: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_NUMBER, TWILIO_TEMPLATE_SID');
   process.exit(1);
@@ -187,7 +204,50 @@ function formatPhoneNumber(phone) {
 }
 
 /**
- * Send WhatsApp message via Twilio using Content Template
+ * Generic function to send WhatsApp message via Twilio
+ */
+async function sendTwilioWhatsApp(toNumber, templateSid, contentVariables) {
+  try {
+    const formattedNumber = formatPhoneNumber(toNumber);
+    if (!formattedNumber) {
+      throw new Error('Invalid phone number');
+    }
+
+    const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_CONFIG.accountSid}/Messages.json`;
+
+    const params = new URLSearchParams();
+    params.append('To', formattedNumber);
+    params.append('From', TWILIO_CONFIG.whatsappNumber);
+    params.append('ContentSid', templateSid);
+    params.append('ContentVariables', JSON.stringify(contentVariables));
+
+    const auth = Buffer.from(`${TWILIO_CONFIG.accountSid}:${TWILIO_CONFIG.authToken}`).toString('base64');
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: params
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Failed to send WhatsApp: ${response.status} - ${errorText}`);
+    }
+
+    const result = await response.json();
+    console.log(`✅ WhatsApp sent to ${toNumber}, SID: ${result.sid}`);
+    return { success: true, sid: result.sid };
+  } catch (error) {
+    console.error('Failed to send WhatsApp message:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Send WhatsApp message via Twilio using Content Template (for reminders - existing function)
  */
 async function sendWhatsAppMessage(toNumber, business, booking) {
   try {
@@ -216,7 +276,7 @@ async function sendWhatsAppMessage(toNumber, business, booking) {
     const params = new URLSearchParams();
     params.append('To', formattedNumber);
     params.append('From', TWILIO_CONFIG.whatsappNumber);
-    params.append('ContentSid', TWILIO_CONFIG.templateSid);
+    params.append('ContentSid', TWILIO_CONFIG.reminderTemplateSid);
     params.append('ContentVariables', contentVariables);
 
     const auth = Buffer.from(`${TWILIO_CONFIG.accountSid}:${TWILIO_CONFIG.authToken}`).toString('base64');
@@ -267,6 +327,206 @@ async function sendReminderWhatsApp(business, booking) {
   }
 }
 
+// ============================================
+// API ENDPOINTS
+// ============================================
+
+/**
+ * Health check endpoint
+ */
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+/**
+ * Send booking confirmation
+ * POST /api/send-confirmation
+ * Body: { phone, clientName, businessName, date, time, whatsappEnabled }
+ */
+app.post('/api/send-confirmation', async (req, res) => {
+  try {
+    const { phone, clientName, businessName, date, time, whatsappEnabled } = req.body;
+
+    // Check if user has WhatsApp notifications enabled
+    if (whatsappEnabled === false) {
+      return res.json({ 
+        success: false, 
+        skipped: true,
+        message: 'User has WhatsApp notifications disabled' 
+      });
+    }
+
+    if (!phone || !clientName || !businessName || !date || !time) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Missing required fields: phone, clientName, businessName, date, time' 
+      });
+    }
+
+    // Format date in Hebrew
+    const formattedDate = format(parseISO(date), 'd בMMMM', { locale: he });
+
+    // Template: היי {{1}}, התור שלך ל{{2}} בתאריך {{3}} בשעה {{4}} אושר! נתראה!
+    const contentVariables = {
+      "1": clientName,
+      "2": businessName,
+      "3": formattedDate,
+      "4": time
+    };
+
+    const result = await sendTwilioWhatsApp(phone, TWILIO_CONFIG.confirmationTemplateSid, contentVariables);
+    
+    if (result.success) {
+      console.log(`📱 Confirmation sent to ${clientName} (${phone})`);
+      res.json({ success: true, message: 'Confirmation sent', sid: result.sid });
+    } else {
+      res.status(500).json({ success: false, error: result.error });
+    }
+  } catch (error) {
+    console.error('Error in send-confirmation:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Send booking update/cancellation notification
+ * POST /api/send-update
+ * Body: { phone, clientName, businessName, whatsappEnabled }
+ */
+app.post('/api/send-update', async (req, res) => {
+  try {
+    const { phone, clientName, businessName, whatsappEnabled } = req.body;
+
+    // Check if user has WhatsApp notifications enabled
+    if (whatsappEnabled === false) {
+      return res.json({ 
+        success: false, 
+        skipped: true,
+        message: 'User has WhatsApp notifications disabled' 
+      });
+    }
+
+    if (!phone || !clientName || !businessName) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Missing required fields: phone, clientName, businessName' 
+      });
+    }
+
+    // Template: היי {{1}}, התור שלך ב{{2}} עודכן! ניתן לראות את הפרטים המעודכנים באפליקציה.
+    const contentVariables = {
+      "1": clientName,
+      "2": businessName
+    };
+
+    const result = await sendTwilioWhatsApp(phone, TWILIO_CONFIG.updateTemplateSid, contentVariables);
+    
+    if (result.success) {
+      console.log(`📱 Update notification sent to ${clientName} (${phone})`);
+      res.json({ success: true, message: 'Update notification sent', sid: result.sid });
+    } else {
+      res.status(500).json({ success: false, error: result.error });
+    }
+  } catch (error) {
+    console.error('Error in send-update:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Send broadcast message to multiple clients
+ * POST /api/send-broadcast
+ * Body: { businessId, businessName, message, clients: [{phone, name, whatsappEnabled}] }
+ */
+app.post('/api/send-broadcast', async (req, res) => {
+  try {
+    const { businessId, businessName, message, clients } = req.body;
+
+    if (!businessName || !message) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Missing required fields: businessName, message' 
+      });
+    }
+
+    let clientList = clients;
+
+    // If no client list provided, fetch from bookings
+    if (!clientList && businessId) {
+      const bookings = await fetchBookings(businessId);
+      
+      // Get unique clients with phone numbers
+      const uniqueClients = {};
+      for (const booking of bookings) {
+        if (booking.client_phone && booking.client_name && !uniqueClients[booking.client_phone]) {
+          uniqueClients[booking.client_phone] = {
+            phone: booking.client_phone,
+            name: booking.client_name,
+            whatsappEnabled: booking.whatsapp_notifications_enabled !== false // Default to true
+          };
+        }
+      }
+      clientList = Object.values(uniqueClients);
+    }
+
+    if (!clientList || clientList.length === 0) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'No clients found to send broadcast' 
+      });
+    }
+
+    // Filter only clients with WhatsApp enabled
+    const enabledClients = clientList.filter(c => c.whatsappEnabled !== false);
+    
+    console.log(`📢 Sending broadcast to ${enabledClients.length} clients (${clientList.length - enabledClients.length} opted out)...`);
+
+    const results = {
+      success: 0,
+      failed: 0,
+      skipped: clientList.length - enabledClients.length,
+      errors: []
+    };
+
+    // Send to each client
+    for (const client of enabledClients) {
+      // Template: היי {{1}}, יש לך הודעה חדשה מאת {{2}}: {{3}} בברכה, LinedUp
+      const contentVariables = {
+        "1": client.name || 'לקוח יקר',
+        "2": businessName,
+        "3": message
+      };
+
+      const result = await sendTwilioWhatsApp(client.phone, TWILIO_CONFIG.broadcastTemplateSid, contentVariables);
+      
+      if (result.success) {
+        results.success++;
+      } else {
+        results.failed++;
+        results.errors.push({ phone: client.phone, error: result.error });
+      }
+
+      // Small delay to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    console.log(`📢 Broadcast complete: ${results.success} sent, ${results.failed} failed, ${results.skipped} skipped`);
+    
+    res.json({ 
+      success: true, 
+      message: `Broadcast sent to ${results.success} clients`,
+      results 
+    });
+  } catch (error) {
+    console.error('Error in send-broadcast:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================
+// REMINDER SERVICE (existing functionality)
+// ============================================
+
 /**
  * Process reminders for a specific business
  */
@@ -313,6 +573,13 @@ async function processBusinessReminders(business) {
     // Skip if no client phone
     if (!booking.client_phone) {
       console.log(`   ⏭️  SKIPPED: No phone number`);
+      skippedCount++;
+      continue;
+    }
+
+    // Check if user has WhatsApp notifications enabled (default to true if not set)
+    if (booking.whatsapp_notifications_enabled === false) {
+      console.log(`   ⏭️  SKIPPED: User disabled WhatsApp notifications`);
       skippedCount++;
       continue;
     }
@@ -409,7 +676,7 @@ async function checkAndSendReminders() {
     const totalSkipped = results.reduce((sum, r) => sum + (r.skipped || 0), 0);
     console.log(`   Total WhatsApp reminders sent: ${totalSent}`);
     console.log(`   Total skipped: ${totalSkipped}`);
-    console.log(`   💰 Cost: $${(totalSent * 0.005).toFixed(3)} (at $0.005/message)`);
+    console.log(`   💰 Cost: $${(totalSent * 0.0353).toFixed(3)} (at $0.0353/message)`);
     console.log('='.repeat(60) + '\n');
     
   } catch (error) {
@@ -447,15 +714,23 @@ function scheduleNextRun() {
  * Start the service
  */
 function startService() {
-  console.log('🚀 Automated WhatsApp Reminder Service Started');
-  console.log(`⏰ Reminder checks: at :00, :15, :30, :45 of every hour`);
-  console.log(`🎯 Timing: SUPER PRECISE (±10 minutes of target time)`);
-  console.log(`🌍 Timezone: ${process.env.TZ || 'UTC'}`);
-  console.log(`📱 Provider: Twilio WhatsApp`);
-  console.log(`📞 From Number: ${TWILIO_CONFIG.whatsappNumber}`);
-  console.log(`📋 Template SID: ${TWILIO_CONFIG.templateSid}`);
-  console.log(`💰 Cost: $0.005 per message (52x cheaper than SMS!)`);
-  console.log(`💡 Confirmations: DISABLED (reminders only to save costs)\n`);
+  // Start Express server
+  app.listen(PORT, () => {
+    console.log('🚀 WhatsApp Service Started');
+    console.log(`🌐 API Server running on port ${PORT}`);
+    console.log(`⏰ Reminder checks: at :00, :15, :30, :45 of every hour`);
+    console.log(`🎯 Timing: SUPER PRECISE (±10 minutes of target time)`);
+    console.log(`🌍 Timezone: ${process.env.TZ || 'UTC'}`);
+    console.log(`📱 Provider: Twilio WhatsApp`);
+    console.log(`📞 From Number: ${TWILIO_CONFIG.whatsappNumber}`);
+    console.log(`📋 Reminder Template: ${TWILIO_CONFIG.reminderTemplateSid}`);
+    console.log(`💰 Cost: $0.0353 per message\n`);
+    console.log('📡 API Endpoints:');
+    console.log('   POST /api/send-confirmation - Send booking confirmation');
+    console.log('   POST /api/send-update - Send update/cancellation notification');
+    console.log('   POST /api/send-broadcast - Send broadcast to all clients');
+    console.log('   GET  /health - Health check\n');
+  });
   
   // Run reminder check immediately on start
   checkAndSendReminders();
