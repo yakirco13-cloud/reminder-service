@@ -54,10 +54,10 @@ const TWILIO_CONFIG = {
   authToken: process.env.TWILIO_AUTH_TOKEN,
   whatsappNumber: process.env.TWILIO_WHATSAPP_NUMBER,
   // Template SIDs
-  reminderTemplateSid: process.env.TWILIO_TEMPLATE_SID, // Existing reminder template
-  confirmationTemplateSid: 'HX835cc8141398f0a037c21e061404bba0',
-  updateTemplateSid: 'HXfb6f60eb9acb068d3100d204e8d866b9',
-  broadcastTemplateSid: 'HXd94763214416ec4100848e81162aad92',
+  reminderTemplateSid: 'HX5abe889e6eb7edfb9ea5ccf39f5e5b84', // Reminder template
+  confirmationTemplateSid: 'HX833cc8141398f0a037c21e061404bba0', // Confirmation template
+  updateTemplateSid: 'HXfb6f60eb9acb068d3100d204e8d866b9', // Update/cancel template
+  broadcastTemplateSid: 'HXd94763214416ec4100848e81162aad92', // Broadcast template
 };
 
 // Validate that all required environment variables are set
