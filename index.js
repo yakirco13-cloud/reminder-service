@@ -25,9 +25,16 @@ import { format, parseISO, differenceInMinutes } from 'date-fns';
 import { he } from 'date-fns/locale';
 import fs from 'fs';
 import path from 'path';
+import express from 'express';
+import cors from 'cors';
 
 // Set timezone to Israel (GMT+2)
 process.env.TZ = 'Asia/Jerusalem';
+
+// Initialize Express app
+const app = express();
+app.use(cors());
+app.use(express.json());
 
 // Base44 API Configuration
 const BASE44_CONFIG = {
@@ -441,6 +448,227 @@ function scheduleNextRun() {
   }, msUntilNext);
 }
 
+// ============================================================
+// EXPRESS API ENDPOINTS
+// ============================================================
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Send confirmation WhatsApp
+app.post('/api/send-confirmation', async (req, res) => {
+  console.log('📥 Received confirmation request:', req.body);
+  
+  const { phone, clientName, businessName, date, time, whatsappEnabled } = req.body;
+  
+  if (!phone || !clientName || !businessName || !date || !time) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+  
+  if (whatsappEnabled === false) {
+    console.log('⏭️ WhatsApp disabled for this user');
+    return res.json({ success: true, skipped: true, reason: 'WhatsApp disabled' });
+  }
+  
+  try {
+    const formattedNumber = formatPhoneNumber(phone);
+    if (!formattedNumber) {
+      return res.status(400).json({ error: 'Invalid phone number' });
+    }
+    
+    // Format date for template (d.M.yyyy format)
+    let formattedDate;
+    try {
+      formattedDate = format(parseISO(date), 'd.M.yyyy');
+    } catch (e) {
+      formattedDate = date;
+    }
+    
+    const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_CONFIG.accountSid}/Messages.json`;
+    const auth = Buffer.from(`${TWILIO_CONFIG.accountSid}:${TWILIO_CONFIG.authToken}`).toString('base64');
+    
+    // Confirmation template SID
+    const confirmationTemplateSid = 'HX833cc8141398f0a037c21e061404bba0';
+    
+    const contentVariables = JSON.stringify({
+      "1": String(clientName),
+      "2": String(businessName),
+      "3": String(formattedDate),
+      "4": String(time)
+    });
+    
+    console.log('📤 Sending confirmation with variables:', contentVariables);
+    
+    const params = new URLSearchParams();
+    params.append('To', formattedNumber);
+    params.append('From', TWILIO_CONFIG.whatsappNumber);
+    params.append('ContentSid', confirmationTemplateSid);
+    params.append('ContentVariables', contentVariables);
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: params
+    });
+    
+    const result = await response.json();
+    
+    if (!response.ok) {
+      console.error('❌ Twilio error:', result);
+      return res.status(500).json({ error: 'Failed to send WhatsApp', details: result });
+    }
+    
+    console.log('✅ Confirmation sent successfully');
+    res.json({ success: true, messageSid: result.sid });
+  } catch (error) {
+    console.error('❌ Error sending confirmation:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Send update/cancellation WhatsApp
+app.post('/api/send-update', async (req, res) => {
+  console.log('📥 Received update request:', req.body);
+  
+  const { phone, clientName, businessName, whatsappEnabled } = req.body;
+  
+  if (!phone || !clientName || !businessName) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+  
+  if (whatsappEnabled === false) {
+    console.log('⏭️ WhatsApp disabled for this user');
+    return res.json({ success: true, skipped: true, reason: 'WhatsApp disabled' });
+  }
+  
+  try {
+    const formattedNumber = formatPhoneNumber(phone);
+    if (!formattedNumber) {
+      return res.status(400).json({ error: 'Invalid phone number' });
+    }
+    
+    const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_CONFIG.accountSid}/Messages.json`;
+    const auth = Buffer.from(`${TWILIO_CONFIG.accountSid}:${TWILIO_CONFIG.authToken}`).toString('base64');
+    
+    // Update template SID
+    const updateTemplateSid = 'HXfb6f60eb9acb068d3100d204e8d866b9';
+    
+    const contentVariables = JSON.stringify({
+      "1": String(clientName),
+      "2": String(businessName)
+    });
+    
+    console.log('📤 Sending update with variables:', contentVariables);
+    
+    const params = new URLSearchParams();
+    params.append('To', formattedNumber);
+    params.append('From', TWILIO_CONFIG.whatsappNumber);
+    params.append('ContentSid', updateTemplateSid);
+    params.append('ContentVariables', contentVariables);
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: params
+    });
+    
+    const result = await response.json();
+    
+    if (!response.ok) {
+      console.error('❌ Twilio error:', result);
+      return res.status(500).json({ error: 'Failed to send WhatsApp', details: result });
+    }
+    
+    console.log('✅ Update sent successfully');
+    res.json({ success: true, messageSid: result.sid });
+  } catch (error) {
+    console.error('❌ Error sending update:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Send broadcast message
+app.post('/api/send-broadcast', async (req, res) => {
+  console.log('📥 Received broadcast request');
+  
+  const { recipients, message } = req.body;
+  
+  if (!recipients || !Array.isArray(recipients) || recipients.length === 0) {
+    return res.status(400).json({ error: 'Missing or invalid recipients' });
+  }
+  
+  if (!message) {
+    return res.status(400).json({ error: 'Missing message' });
+  }
+  
+  try {
+    const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_CONFIG.accountSid}/Messages.json`;
+    const auth = Buffer.from(`${TWILIO_CONFIG.accountSid}:${TWILIO_CONFIG.authToken}`).toString('base64');
+    
+    // Broadcast template SID
+    const broadcastTemplateSid = 'HXd94763214416ec4100848e81162aad92';
+    
+    let successCount = 0;
+    let failCount = 0;
+    
+    for (const recipient of recipients) {
+      const formattedNumber = formatPhoneNumber(recipient.phone);
+      if (!formattedNumber) {
+        failCount++;
+        continue;
+      }
+      
+      const contentVariables = JSON.stringify({
+        "1": String(recipient.name || 'לקוח יקר'),
+        "2": String(message)
+      });
+      
+      const params = new URLSearchParams();
+      params.append('To', formattedNumber);
+      params.append('From', TWILIO_CONFIG.whatsappNumber);
+      params.append('ContentSid', broadcastTemplateSid);
+      params.append('ContentVariables', contentVariables);
+      
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Basic ${auth}`,
+            'Content-Type': 'application/x-www-form-urlencoded'
+          },
+          body: params
+        });
+        
+        if (response.ok) {
+          successCount++;
+        } else {
+          failCount++;
+        }
+      } catch (e) {
+        failCount++;
+      }
+    }
+    
+    console.log(`✅ Broadcast complete: ${successCount} sent, ${failCount} failed`);
+    res.json({ success: true, sent: successCount, failed: failCount });
+  } catch (error) {
+    console.error('❌ Error sending broadcast:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================
+// REMINDER SERVICE
+// ============================================================
+
 /**
  * Start the service
  */
@@ -462,8 +690,15 @@ function startService() {
   scheduleNextRun();
 }
 
-// Start the service
+// Start the reminder service
 startService();
+
+// Start Express server
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🌐 API server running on port ${PORT}`);
+  console.log(`📡 Endpoints: /health, /api/send-confirmation, /api/send-update, /api/send-broadcast`);
+});
 
 // Handle graceful shutdown
 process.on('SIGTERM', () => {
