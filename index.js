@@ -347,6 +347,8 @@ app.post('/api/send-confirmation', async (req, res) => {
   try {
     const { phone, clientName, businessName, date, time, whatsappEnabled } = req.body;
 
+    console.log('📥 Received confirmation request:', { phone, clientName, businessName, date, time, whatsappEnabled });
+
     // Check if user has WhatsApp notifications enabled
     if (whatsappEnabled === false) {
       return res.json({ 
@@ -363,16 +365,26 @@ app.post('/api/send-confirmation', async (req, res) => {
       });
     }
 
-    // Format date as dd.MM.yyyy (e.g., 10.12.2025)
-    const formattedDate = format(parseISO(date), 'd.M.yyyy');
+    // Format date as d.M.yyyy (e.g., 2.12.2025)
+    let formattedDate;
+    try {
+      formattedDate = format(parseISO(date), 'd.M.yyyy');
+    } catch (e) {
+      // If parseISO fails, try to use the date as-is or format it differently
+      console.log('⚠️ Date parsing failed, using fallback');
+      formattedDate = date;
+    }
 
     // Template: היי {{1}}, התור שלך ל{{2}} בתאריך {{3}} בשעה {{4}} אושר! נתראה!
+    // All values must be strings
     const contentVariables = {
-      "1": clientName,
-      "2": businessName,
-      "3": formattedDate,
-      "4": time
+      "1": String(clientName || ''),
+      "2": String(businessName || ''),
+      "3": String(formattedDate || ''),
+      "4": String(time || '')
     };
+
+    console.log('📤 Sending with variables:', contentVariables);
 
     const result = await sendTwilioWhatsApp(phone, TWILIO_CONFIG.confirmationTemplateSid, contentVariables);
     
@@ -651,6 +663,17 @@ async function checkAndSendReminders() {
   console.log('\n' + '='.repeat(60));
   console.log(`🔔 WhatsApp Reminder Check Started: ${new Date().toISOString()}`);
   console.log('='.repeat(60));
+  
+  // Skip reminder checks between 18:00-04:00 Israel time (save resources)
+  const israelTime = new Date().toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' });
+  const israelHour = new Date(israelTime).getHours();
+  
+  if (israelHour >= 18 || israelHour < 4) {
+    console.log(`😴 Night time (${israelHour}:00 Israel) - skipping reminder check`);
+    console.log('   Active hours: 04:00 - 18:00 Israel time');
+    console.log('='.repeat(60) + '\n');
+    return;
+  }
   
   try {
     // Fetch all businesses
