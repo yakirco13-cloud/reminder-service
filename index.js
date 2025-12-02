@@ -363,8 +363,8 @@ app.post('/api/send-confirmation', async (req, res) => {
       });
     }
 
-    // Format date in Hebrew
-    const formattedDate = format(parseISO(date), 'd בMMMM', { locale: he });
+    // Format date as dd.MM.yyyy (e.g., 10.12.2025)
+    const formattedDate = format(parseISO(date), 'd.M.yyyy');
 
     // Template: היי {{1}}, התור שלך ל{{2}} בתאריך {{3}} בשעה {{4}} אושר! נתראה!
     const contentVariables = {
