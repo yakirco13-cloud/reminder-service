@@ -36,6 +36,21 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// API Key for authentication (set in Railway environment variables)
+const API_KEY = process.env.WHATSAPP_API_KEY || 'linedup-whatsapp-2024-secure';
+
+// Middleware to check API key
+const authenticateApiKey = (req, res, next) => {
+  const apiKey = req.headers['x-api-key'];
+  
+  if (!apiKey || apiKey !== API_KEY) {
+    console.log('❌ Unauthorized request - invalid API key');
+    return res.status(401).json({ error: 'Unauthorized - Invalid API key' });
+  }
+  
+  next();
+};
+
 // Base44 API Configuration
 const BASE44_CONFIG = {
   apiUrl: 'https://base44.app/api/apps/690b351ea4e5f2f9d798cdbb',
@@ -452,13 +467,13 @@ function scheduleNextRun() {
 // EXPRESS API ENDPOINTS
 // ============================================================
 
-// Health check endpoint
+// Health check endpoint (no auth required)
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Send confirmation WhatsApp
-app.post('/api/send-confirmation', async (req, res) => {
+// Send confirmation WhatsApp (auth required)
+app.post('/api/send-confirmation', authenticateApiKey, async (req, res) => {
   console.log('📥 Received confirmation request:', req.body);
   
   const { phone, clientName, businessName, date, time, whatsappEnabled } = req.body;
@@ -531,8 +546,8 @@ app.post('/api/send-confirmation', async (req, res) => {
   }
 });
 
-// Send update/cancellation WhatsApp
-app.post('/api/send-update', async (req, res) => {
+// Send update/cancellation WhatsApp (auth required)
+app.post('/api/send-update', authenticateApiKey, async (req, res) => {
   console.log('📥 Received update request:', req.body);
   
   const { phone, clientName, businessName, whatsappEnabled } = req.body;
@@ -595,8 +610,8 @@ app.post('/api/send-update', async (req, res) => {
   }
 });
 
-// Send broadcast message
-app.post('/api/send-broadcast', async (req, res) => {
+// Send broadcast message (auth required)
+app.post('/api/send-broadcast', authenticateApiKey, async (req, res) => {
   console.log('📥 Received broadcast request');
   
   const { recipients, message } = req.body;
