@@ -665,6 +665,76 @@ app.post('/api/send-broadcast', async (req, res) => {
   }
 });
 
+// Send waiting list notification (slot opened up)
+app.post('/api/send-waiting-list', async (req, res) => {
+  console.log('📥 Received waiting list notification request:', req.body);
+  
+  const { phone, clientName, date, serviceName, templateId } = req.body;
+  
+  if (!phone || !clientName || !date) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+  
+  try {
+    const formattedNumber = formatPhoneNumber(phone);
+    if (!formattedNumber) {
+      return res.status(400).json({ error: 'Invalid phone number' });
+    }
+    
+    // Format date for display
+    let formattedDate;
+    try {
+      formattedDate = format(parseISO(date), 'd.M.yyyy');
+    } catch (e) {
+      formattedDate = date;
+    }
+    
+    const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_CONFIG.accountSid}/Messages.json`;
+    const auth = Buffer.from(`${TWILIO_CONFIG.accountSid}:${TWILIO_CONFIG.authToken}`).toString('base64');
+    
+    // Use provided template ID or default
+    const waitingListTemplateSid = templateId || 'HXd75dea9bfaea32988c7532ecc6969b34';
+    
+    // Template variables:
+    // {{1}} = name, {{2}} = date, {{3}} = service
+    const contentVariables = JSON.stringify({
+      "1": String(clientName),
+      "2": String(formattedDate),
+      "3": String(serviceName || 'תור')
+    });
+    
+    console.log('📤 Sending waiting list notification with variables:', contentVariables);
+    
+    const params = new URLSearchParams();
+    params.append('To', formattedNumber);
+    params.append('From', TWILIO_CONFIG.whatsappNumber);
+    params.append('ContentSid', waitingListTemplateSid);
+    params.append('ContentVariables', contentVariables);
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: params
+    });
+    
+    const result = await response.json();
+    
+    if (!response.ok) {
+      console.error('❌ Twilio error:', result);
+      return res.status(500).json({ error: 'Failed to send WhatsApp', details: result });
+    }
+    
+    console.log('✅ Waiting list notification sent successfully');
+    res.json({ success: true, messageSid: result.sid });
+  } catch (error) {
+    console.error('❌ Error sending waiting list notification:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ============================================================
 // REMINDER SERVICE
 // ============================================================
@@ -697,7 +767,7 @@ startService();
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🌐 API server running on port ${PORT}`);
-  console.log(`📡 Endpoints: /health, /api/send-confirmation, /api/send-update, /api/send-broadcast`);
+  console.log(`📡 Endpoints: /health, /api/send-confirmation, /api/send-update, /api/send-broadcast, /api/send-waiting-list`);
 });
 
 // Handle graceful shutdown
